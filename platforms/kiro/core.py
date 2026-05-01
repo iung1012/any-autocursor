@@ -1243,33 +1243,37 @@ class KiroRegister:
 
             self.log("等待跳转到 AWS SSO ...")
             page.wait_for_url(re.compile(r"signin\.aws"), timeout=30000)
-            self._accept_cookie_banner_if_present(page)
             self._solve_captcha_if_exists(page)
 
-            # 1. 填写 Email
+            # 1. 填写 Email — aguarda campo com retry de cookie banner
             self.log("1. 填写 Email...")
-            # Debug: 打印出现的所有 input 了解真实属性
-            try:
-                inputs_info = []
-                for field in page.locator("input").all():
-                    inputs_info.append(
-                        f"id={field.get_attribute('id')} type={field.get_attribute('type')} name={field.get_attribute('name')}"
-                    )
-                self.log(f"Page Inputs: {inputs_info}")
-            except Exception:
-                pass
-
-            # 宽泛定位器，涵盖大量 aws SSO 可能出现的情况
-            # AWS 的极度变态之处：它不用 type="email" 也不用 name="email"，而是动态生成类似于 id="formField14-1774542604278-6990" 的 type="text"
-            email_input = page.locator(
-                'input[placeholder="username@example.com"], input[type="email"]'
-            ).first
-            email_input.wait_for(state="visible", timeout=15000)
-            self._type_like_human(
-                page,
-                'input[placeholder="username@example.com"], input[type="email"]',
-                email,
-            )
+            EMAIL_SELECTOR = 'input[placeholder="username@example.com"], input[type="email"]'
+            email_input = None
+            _email_deadline = time.time() + 35
+            while time.time() < _email_deadline:
+                self._accept_cookie_banner_if_present(page)
+                try:
+                    el = page.locator(EMAIL_SELECTOR).first
+                    if el.count() > 0 and el.is_visible():
+                        email_input = el
+                        break
+                except Exception:
+                    pass
+                self._human_sleep(0.5, 1.0)
+            if email_input is None:
+                # log all inputs for diagnosis
+                try:
+                    inputs_info = [
+                        f"id={f.get_attribute('id')} type={f.get_attribute('type')} placeholder={f.get_attribute('placeholder')}"
+                        for f in page.locator("input").all()
+                    ]
+                    self.log(f"  [timeout] inputs: {inputs_info}")
+                    self.log(f"  [timeout] url: {page.url[:120]}")
+                    page.screenshot(path="kiro_email_input_timeout.png")
+                except Exception:
+                    pass
+                raise RuntimeError("Campo de e-mail não encontrado na página AWS SSO (timeout 35s)")
+            self._type_like_human(page, email_input, email)
             # Try clicking the primary button; also press Enter as reliable fallback
             self._click_primary_button(page)
             try:
