@@ -616,12 +616,22 @@ class KiroRegister:
     ) -> Tuple[str, Optional[Locator], str]:
         deadline = time.time() + (timeout_ms / 1000)
         error_patterns = [
+            # English
             re.compile(r"error processing your request", re.I),
             re.compile(r"couldn't complete your request", re.I),
             re.compile(r"verify your email", re.I),
             re.compile(r"invalid verification code", re.I),
+            re.compile(r"something went wrong", re.I),
+            re.compile(r"email.*already.*exist", re.I),
+            # Portuguese
+            re.compile(r"erro ao processar", re.I),
+            re.compile(r"n.o foi poss.vel", re.I),
+            re.compile(r"j. existe uma conta", re.I),
+            re.compile(r"endere.o de e-mail inv", re.I),
+            re.compile(r"tente novamente", re.I),
+            re.compile(r"ocorreu um erro", re.I),
         ]
-
+        debug_tick = 0
         while time.time() < deadline:
             otp_field = self._get_first_visible_locator(
                 self._otp_input_candidates(page)
@@ -641,19 +651,51 @@ class KiroRegister:
             if error_text:
                 return "error", None, error_text
 
+            # Every ~5s log the current URL to help diagnose stuck pages
+            debug_tick += 1
+            if debug_tick % 10 == 0:
+                try:
+                    self.log(f"  [debug] URL atual: {page.url[:120]}")
+                    # Also dump any visible text from known error containers
+                    for sel in ['[class*="error"]', '[class*="alert"]', '[role="alert"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if el.count() > 0 and el.is_visible():
+                                txt = (el.text_content() or "").strip()[:120]
+                                if txt:
+                                    self.log(f"  [debug] {sel}: {txt}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
             self._human_sleep(0.2, 0.6)
 
-        return "timeout", None, "等待姓名或 OTP 输入框超时"
+        # On timeout: log URL + take screenshot for diagnosis
+        try:
+            self.log(f"  [timeout] URL: {page.url[:120]}")
+            page.screenshot(path="kiro_post_email_timeout.png")
+            self.log("  Screenshot salvo: kiro_post_email_timeout.png")
+        except Exception:
+            pass
+        return "timeout", None, "Tempo limite de espera para entrada de nome ou codigo OTP excedido"
 
     def _wait_for_otp_step(
         self, page: Page, timeout_ms: int = 18000
     ) -> Tuple[bool, str, Optional[Locator]]:
         deadline = time.time() + (timeout_ms / 1000)
         error_patterns = [
+            # English
             re.compile(r"error processing your request", re.I),
             re.compile(r"couldn't complete your request", re.I),
             re.compile(r"verify your email", re.I),
             re.compile(r"invalid verification code", re.I),
+            re.compile(r"something went wrong", re.I),
+            # Portuguese
+            re.compile(r"erro ao processar", re.I),
+            re.compile(r"n.o foi poss.vel", re.I),
+            re.compile(r"c.digo.*inv", re.I),
+            re.compile(r"ocorreu um erro", re.I),
         ]
 
         while time.time() < deadline:
@@ -1163,9 +1205,25 @@ class KiroRegister:
                 'input[placeholder="username@example.com"], input[type="email"]',
                 email,
             )
+            # Try clicking the primary button; also press Enter as reliable fallback
             self._click_primary_button(page)
+            try:
+                # Verify the email field still has our value (wasn't cleared by a click)
+                val = email_input.input_value()
+                if val != email:
+                    self.log(f"  [warn] Email field changed to '{val}', refilling...")
+                    email_input.fill(email)
+                # Press Enter to submit regardless of which button was clicked
+                page.keyboard.press("Enter")
+            except Exception:
+                pass
             self._human_sleep(1.1, 2.4)
             self._solve_captcha_if_exists(page)
+            # Log current URL after submit attempt
+            try:
+                self.log(f"  [post-submit] URL: {page.url[:120]}")
+            except Exception:
+                pass
 
             # 2. 等待邮箱后的实际下一步（某些 AWS 页面会延迟很久才出现姓名输入框）
             self.log("2. 等待姓名或 OTP 阶段...")
