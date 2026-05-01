@@ -1983,7 +1983,7 @@ class LuckMailMailbox(BaseMailbox):
 
     BASE_URL = "https://mails.luckyous.com"
 
-    def __init__(self, api_key: str, api_secret: str, project_code: str = "cursor",
+    def __init__(self, api_key: str, api_secret: str = "", project_code: str = "cursor",
                  email_type: str = "", domain: str = "", api_url: str = ""):
         self.api_key = str(api_key or "").strip()
         self.api_secret = str(api_secret or "").strip()
@@ -1993,25 +1993,28 @@ class LuckMailMailbox(BaseMailbox):
         self.base_url = (str(api_url or "").strip() or self.BASE_URL).rstrip("/")
 
     def _sign(self) -> dict:
-        """Gera headers de autenticação HMAC-SHA256.
-        Fórmula correta: HMAC-SHA256(api_secret, api_key + timestamp + nonce)
+        """Gera headers de autenticação.
+        - Modo simples (sem api_secret): apenas X-API-Key
+        - Modo HMAC (com api_secret): HMAC-SHA256(api_secret, api_key + timestamp + nonce)
         """
-        import hashlib
-        import hmac as _hmac
-        import secrets
-        import time as _time
-        ts = str(int(_time.time()))
-        nonce = secrets.token_hex(16)
-        msg = self.api_key + ts + nonce
-        sig = _hmac.new(self.api_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
-        return {
+        headers = {
             "X-API-Key": self.api_key,
-            "X-Timestamp": ts,
-            "X-Nonce": nonce,
-            "X-Signature": sig,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        if self.api_secret:
+            import hashlib
+            import hmac as _hmac
+            import secrets
+            import time as _time
+            ts = str(int(_time.time()))
+            nonce = secrets.token_hex(16)
+            msg = self.api_key + ts + nonce
+            sig = _hmac.new(self.api_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+            headers["X-Timestamp"] = ts
+            headers["X-Nonce"] = nonce
+            headers["X-Signature"] = sig
+        return headers
 
     def _request(self, method: str, path: str, body: dict = None) -> dict:
         import requests as _requests
@@ -2028,8 +2031,8 @@ class LuckMailMailbox(BaseMailbox):
         return resp.get("data", {})
 
     def get_email(self) -> MailboxAccount:
-        if not self.api_key or not self.api_secret:
-            raise RuntimeError("LuckMail: API Key e API Secret são obrigatórios")
+        if not self.api_key:
+            raise RuntimeError("LuckMail: API Key é obrigatório")
         path = "/api/v1/openapi/order/create"
         payload: dict = {"project_code": self.project_code}
         if self.email_type:
