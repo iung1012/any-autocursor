@@ -570,16 +570,26 @@ class KiroRegister:
     def _name_input_candidates(self, page: Page):
         return [
             page.get_by_label("Name", exact=True),
+            page.get_by_label("Nome", exact=True),
             page.get_by_label(re.compile(r"your name", re.I)),
+            page.get_by_label(re.compile(r"seu nome", re.I)),
+            page.get_by_label(re.compile(r"^nome$", re.I)),
             page.locator('input[placeholder="Maria José Silva"]'),
             page.locator('input[autocomplete="name"]'),
             page.locator('input[name="name"]'),
+            page.locator('input[id*="name" i]'),
         ]
 
     def _otp_input_candidates(self, page: Page):
         return [
             page.get_by_label("Verification code", exact=True),
+            page.get_by_label(re.compile(r"verification code", re.I)),
+            page.get_by_label(re.compile(r"código de verificação", re.I)),
+            page.get_by_label(re.compile(r"código", re.I)),
+            page.locator('input[autocomplete="one-time-code"]'),
+            page.locator('input[type="number"][maxlength]'),
             page.locator('input[placeholder*="6-digit" i]'),
+            page.locator('input[placeholder*="código" i]'),
             page.locator('div[data-testid*="code-input"] input'),
             page.locator('input[name="code"], input[id*="code"]'),
         ]
@@ -611,8 +621,20 @@ class KiroRegister:
 
         return False, "提交验证码后未进入密码设置页"
 
+    def _url_step_hint(self, page: Page) -> Optional[str]:
+        """Return 'otp' or 'name' if the current URL hash hints at the step."""
+        try:
+            url = page.url.lower()
+            if "verify-email" in url or "verify_email" in url:
+                return "otp"
+            if "enter-name" in url or "enter_name" in url:
+                return "name"
+        except Exception:
+            pass
+        return None
+
     def _wait_for_post_email_step(
-        self, page: Page, timeout_ms: int = 30000
+        self, page: Page, timeout_ms: int = 45000
     ) -> Tuple[str, Optional[Locator], str]:
         deadline = time.time() + (timeout_ms / 1000)
         error_patterns = [
@@ -633,6 +655,21 @@ class KiroRegister:
         ]
         debug_tick = 0
         while time.time() < deadline:
+            # Fast-path: infer step from URL hash before polling DOM
+            url_hint = self._url_step_hint(page)
+            if url_hint == "otp":
+                otp_field = self._get_first_visible_locator(
+                    self._otp_input_candidates(page)
+                )
+                if otp_field:
+                    return "otp", otp_field, ""
+            elif url_hint == "name":
+                name_field = self._get_first_visible_locator(
+                    self._name_input_candidates(page)
+                )
+                if name_field:
+                    return "name", name_field, ""
+
             otp_field = self._get_first_visible_locator(
                 self._otp_input_candidates(page)
             )
@@ -651,12 +688,23 @@ class KiroRegister:
             if error_text:
                 return "error", None, error_text
 
-            # Every ~5s log the current URL to help diagnose stuck pages
+            # Every ~5s log URL + visible inputs for diagnosis
             debug_tick += 1
             if debug_tick % 10 == 0:
                 try:
                     self.log(f"  [debug] URL atual: {page.url[:120]}")
-                    # Also dump any visible text from known error containers
+                    try:
+                        inputs_info = []
+                        for field in page.locator("input").all():
+                            inputs_info.append(
+                                f"id={field.get_attribute('id')} type={field.get_attribute('type')} "
+                                f"name={field.get_attribute('name')} placeholder={field.get_attribute('placeholder')} "
+                                f"autocomplete={field.get_attribute('autocomplete')}"
+                            )
+                        if inputs_info:
+                            self.log(f"  [debug] inputs: {inputs_info}")
+                    except Exception:
+                        pass
                     for sel in ['[class*="error"]', '[class*="alert"]', '[role="alert"]']:
                         try:
                             el = page.locator(sel).first
@@ -671,9 +719,20 @@ class KiroRegister:
 
             self._human_sleep(0.2, 0.6)
 
-        # On timeout: log URL + take screenshot for diagnosis
+        # On timeout: log URL + inputs + screenshot for diagnosis
         try:
             self.log(f"  [timeout] URL: {page.url[:120]}")
+            try:
+                inputs_info = []
+                for field in page.locator("input").all():
+                    inputs_info.append(
+                        f"id={field.get_attribute('id')} type={field.get_attribute('type')} "
+                        f"name={field.get_attribute('name')} placeholder={field.get_attribute('placeholder')} "
+                        f"autocomplete={field.get_attribute('autocomplete')}"
+                    )
+                self.log(f"  [timeout] inputs: {inputs_info}")
+            except Exception:
+                pass
             page.screenshot(path="kiro_post_email_timeout.png")
             self.log("  Screenshot salvo: kiro_post_email_timeout.png")
         except Exception:
@@ -1228,7 +1287,7 @@ class KiroRegister:
             # 2. 等待邮箱后的实际下一步（某些 AWS 页面会延迟很久才出现姓名输入框）
             self.log("2. 等待姓名或 OTP 阶段...")
             stage, stage_input, stage_error = self._wait_for_post_email_step(
-                page, timeout_ms=30000
+                page, timeout_ms=45000
             )
             if stage == "error":
                 return False, {"error": f"Email 提交后 AWS 返回错误: {stage_error}"}
