@@ -574,9 +574,11 @@ class KiroRegister:
             page.get_by_label(re.compile(r"your name", re.I)),
             page.get_by_label(re.compile(r"seu nome", re.I)),
             page.get_by_label(re.compile(r"^nome$", re.I)),
-            page.locator('input[placeholder="Maria José Silva"]'),
+            page.locator('input[placeholder*="Maria"]'),
+            page.locator('input[placeholder*="name" i]'),
             page.locator('input[autocomplete="name"]'),
             page.locator('input[name="name"]'),
+            page.locator('input[name="fullName"]'),
             page.locator('input[id*="name" i]'),
         ]
 
@@ -587,10 +589,14 @@ class KiroRegister:
             page.get_by_label(re.compile(r"código de verificação", re.I)),
             page.get_by_label(re.compile(r"código", re.I)),
             page.locator('input[autocomplete="one-time-code"]'),
+            page.locator('input[inputmode="numeric"]'),
+            page.locator('input[maxlength="6"]'),
             page.locator('input[type="number"][maxlength]'),
+            page.locator('input[placeholder*="6"]'),
             page.locator('input[placeholder*="6-digit" i]'),
             page.locator('input[placeholder*="código" i]'),
             page.locator('div[data-testid*="code-input"] input'),
+            page.locator('input[name="otp"]'),
             page.locator('input[name="code"], input[id*="code"]'),
         ]
 
