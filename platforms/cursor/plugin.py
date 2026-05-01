@@ -86,7 +86,11 @@ class CursorPlatform(BasePlatform):
             ),
             oauth_runner=self._run_browser_oauth,
             capability=RegistrationCapability(oauth_headless_requires_browser_reuse=True),
-            otp_spec=OtpSpec(wait_message="等待 Cursor 邮箱验证码...", success_label="验证码"),
+            otp_spec=OtpSpec(
+                wait_message="等待 Cursor 邮箱验证码...",
+                success_label="验证码",
+                code_pattern=r"(?is)(?:verification\s+code|your\s+code|código)[^0-9]{0,30}(\d{6})",
+            ),
             use_captcha_for_mailbox=True,
         )
 
@@ -109,7 +113,10 @@ class CursorPlatform(BasePlatform):
                 otp_callback=artifacts.otp_callback,
                 captcha_solver=artifacts.captcha_solver,
             ),
-            otp_spec=OtpSpec(wait_message="等待验证码..."),
+            otp_spec=OtpSpec(
+                wait_message="等待验证码...",
+                code_pattern=r"(?is)(?:verification\s+code|your\s+code|código)[^0-9]{0,30}(\d{6})",
+            ),
             use_captcha=True,
         )
 

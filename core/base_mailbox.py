@@ -2081,7 +2081,11 @@ class LuckMailMailbox(BaseMailbox):
                     if code:
                         if code_pattern:
                             m = re.search(code_pattern, code)
-                            return m.group(0) if m else code
+                            if m:
+                                extracted = m.group(1) if m.lastindex and m.lastindex >= 1 else m.group(0)
+                                return extracted
+                            # pattern set but no match — return raw code as fallback
+                            return code
                         print(f"[LuckMail] código recebido: {code}")
                         return code
                 elif status in ("timeout", "cancelled"):

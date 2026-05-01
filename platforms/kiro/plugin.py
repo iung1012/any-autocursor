@@ -124,8 +124,10 @@ class KiroPlatform(BasePlatform):
             worker_builder=_build_worker,
             register_runner=_run_worker,
             otp_spec=OtpSpec(
+                keyword="builder id",
                 wait_message="等待验证码...",
                 timeout=resolve_timeout(self.config.extra or {}, ("otp_timeout",), 120),
+                code_pattern=r"(?is)(?:verification\s+code|código\s+de\s+verifica)[^0-9]{0,30}(\d{6})",
             ),
         )
 
