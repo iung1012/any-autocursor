@@ -237,6 +237,17 @@ def _create_laoudo(extra: dict, proxy: str | None) -> 'BaseMailbox':
     )
 
 
+def _create_luckmail(extra: dict, proxy: str | None) -> 'BaseMailbox':
+    return LuckMailMailbox(
+        api_key=extra.get("luckmail_api_key", ""),
+        api_secret=extra.get("luckmail_api_secret", ""),
+        project_code=extra.get("luckmail_project_code", "cursor"),
+        email_type=extra.get("luckmail_email_type", ""),
+        domain=extra.get("luckmail_domain", ""),
+        api_url=extra.get("luckmail_api_url", ""),
+    )
+
+
 def _create_generic_http(extra: dict, proxy: str | None, *, pipeline_config: dict | None = None) -> 'BaseMailbox':
     from core.generic_http_mailbox import GenericHttpMailbox
     return GenericHttpMailbox(
@@ -258,6 +269,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "cfworker_admin_api": _create_cfworker,
     "testmail_api": _create_testmail,
     "laoudo_api": _create_laoudo,
+    "luckmail_api": _create_luckmail,
     # backward-compat fallback
     "generic_http": _create_generic_http,
     "tempmail_lol": _create_tempmail,
@@ -1964,3 +1976,122 @@ class DDGEmailMailbox(BaseMailbox):
                       timeout: int = 120, before_ids: set = None,
                       code_pattern: str = None) -> str:
         return self._imap_search_code(account.email, timeout, code_pattern)
+
+
+class LuckMailMailbox(BaseMailbox):
+    """LuckMail — serviço de recebimento de código de verificação (Modo A, pay-per-success)."""
+
+    BASE_URL = "https://mails.luckyous.com"
+
+    def __init__(self, api_key: str, api_secret: str, project_code: str = "cursor",
+                 email_type: str = "", domain: str = "", api_url: str = ""):
+        self.api_key = str(api_key or "").strip()
+        self.api_secret = str(api_secret or "").strip()
+        self.project_code = str(project_code or "cursor").strip()
+        self.email_type = str(email_type or "").strip()
+        self.domain = str(domain or "").strip()
+        self.base_url = (str(api_url or "").strip() or self.BASE_URL).rstrip("/")
+
+    def _sign(self, method: str, path: str, body: str = "") -> dict:
+        import hashlib
+        import hmac as _hmac
+        import time as _time
+        ts = str(int(_time.time()))
+        msg = method.upper() + path + ts + body
+        sig = _hmac.new(self.api_secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        return {
+            "X-API-Key": self.api_key,
+            "X-Timestamp": ts,
+            "X-Signature": sig,
+            "Content-Type": "application/json",
+        }
+
+    def _request(self, method: str, path: str, body: dict = None) -> dict:
+        import json as _json
+        import requests as _requests
+        body_str = _json.dumps(body, separators=(",", ":")) if body else ""
+        headers = self._sign(method, path, body_str)
+        url = self.base_url + path
+        r = _requests.request(method, url, headers=headers,
+                              data=body_str if body_str else None, timeout=15)
+        r.raise_for_status()
+        resp = r.json()
+        if resp.get("code") != 0:
+            raise RuntimeError(f"LuckMail erro {resp.get('code')}: {resp.get('message')}")
+        return resp.get("data", {})
+
+    def get_email(self) -> MailboxAccount:
+        if not self.api_key or not self.api_secret:
+            raise RuntimeError("LuckMail: API Key e API Secret são obrigatórios")
+        path = "/api/v1/openapi/order/create"
+        payload: dict = {"project_code": self.project_code}
+        if self.email_type:
+            payload["email_type"] = self.email_type
+        if self.domain:
+            payload["domain"] = self.domain
+        data = self._request("POST", path, payload)
+        email = data["email_address"]
+        order_no = data["order_no"]
+        print(f"[LuckMail] ordem criada: {order_no} -> {email}")
+        return MailboxAccount(
+            email=email,
+            account_id=order_no,
+            extra={
+                "order_no": order_no,
+                "provider_resource": {
+                    "provider_type": "mailbox",
+                    "provider_name": "luckmail",
+                    "resource_type": "order",
+                    "resource_identifier": order_no,
+                    "handle": email,
+                    "display_name": email,
+                },
+            },
+        )
+
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        path = f"/api/v1/openapi/order/{account.account_id}/code"
+        try:
+            data = self._request("GET", path)
+            if data.get("status") == "success":
+                code = data.get("verification_code", "")
+                return {code} if code else set()
+        except Exception:
+            pass
+        return set()
+
+    def wait_for_code(self, account: MailboxAccount, keyword: str = "",
+                      timeout: int = 120, before_ids: set = None,
+                      code_pattern: str = None) -> str:
+        import time as _time
+        order_no = account.account_id
+        path = f"/api/v1/openapi/order/{order_no}/code"
+        start = _time.time()
+        while _time.time() - start < timeout:
+            try:
+                data = self._request("GET", path)
+                status = data.get("status")
+                if status == "success":
+                    code = str(data.get("verification_code") or "").strip()
+                    if code:
+                        if code_pattern:
+                            m = re.search(code_pattern, code)
+                            return m.group(0) if m else code
+                        print(f"[LuckMail] código recebido: {code}")
+                        return code
+                elif status in ("timeout", "cancelled"):
+                    raise TimeoutError(f"LuckMail ordem {order_no} encerrada com status: {status}")
+            except TimeoutError:
+                raise
+            except Exception:
+                pass
+            _time.sleep(3)
+        try:
+            self._request("POST", f"/api/v1/openapi/order/{order_no}/cancel")
+        except Exception:
+            pass
+        raise TimeoutError(f"LuckMail: timeout aguardando código de verificação ({timeout}s)")
+
+    def wait_for_link(self, account: MailboxAccount, keyword: str = "",
+                      timeout: int = 120, before_ids: set = None) -> str:
+        raise NotImplementedError("LuckMail não suporta wait_for_link() no Modo A")
