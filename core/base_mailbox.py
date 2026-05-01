@@ -1992,28 +1992,35 @@ class LuckMailMailbox(BaseMailbox):
         self.domain = str(domain or "").strip()
         self.base_url = (str(api_url or "").strip() or self.BASE_URL).rstrip("/")
 
-    def _sign(self, method: str, path: str, body: str = "") -> dict:
+    def _sign(self) -> dict:
+        """Gera headers de autenticação HMAC-SHA256.
+        Fórmula correta: HMAC-SHA256(api_secret, api_key + timestamp + nonce)
+        """
         import hashlib
         import hmac as _hmac
+        import secrets
         import time as _time
         ts = str(int(_time.time()))
-        msg = method.upper() + path + ts + body
-        sig = _hmac.new(self.api_secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        nonce = secrets.token_hex(16)
+        msg = self.api_key + ts + nonce
+        sig = _hmac.new(self.api_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
         return {
             "X-API-Key": self.api_key,
             "X-Timestamp": ts,
+            "X-Nonce": nonce,
             "X-Signature": sig,
             "Content-Type": "application/json",
+            "Accept": "application/json",
         }
 
     def _request(self, method: str, path: str, body: dict = None) -> dict:
-        import json as _json
         import requests as _requests
-        body_str = _json.dumps(body, separators=(",", ":")) if body else ""
-        headers = self._sign(method, path, body_str)
+        headers = self._sign()
         url = self.base_url + path
-        r = _requests.request(method, url, headers=headers,
-                              data=body_str if body_str else None, timeout=15)
+        kwargs: dict = {"headers": headers, "timeout": 15}
+        if body is not None:
+            kwargs["json"] = body
+        r = _requests.request(method, url, **kwargs)
         r.raise_for_status()
         resp = r.json()
         if resp.get("code") != 0:
@@ -2050,14 +2057,7 @@ class LuckMailMailbox(BaseMailbox):
         )
 
     def get_current_ids(self, account: MailboxAccount) -> set:
-        path = f"/api/v1/openapi/order/{account.account_id}/code"
-        try:
-            data = self._request("GET", path)
-            if data.get("status") == "success":
-                code = data.get("verification_code", "")
-                return {code} if code else set()
-        except Exception:
-            pass
+        # Modo A: a ordem é sempre nova — não há mensagens pré-existentes para filtrar.
         return set()
 
     def wait_for_code(self, account: MailboxAccount, keyword: str = "",
@@ -2067,9 +2067,11 @@ class LuckMailMailbox(BaseMailbox):
         order_no = account.account_id
         path = f"/api/v1/openapi/order/{order_no}/code"
         start = _time.time()
+        consecutive_errors = 0
         while _time.time() - start < timeout:
             try:
                 data = self._request("GET", path)
+                consecutive_errors = 0
                 status = data.get("status")
                 if status == "success":
                     code = str(data.get("verification_code") or "").strip()
@@ -2081,10 +2083,22 @@ class LuckMailMailbox(BaseMailbox):
                         return code
                 elif status in ("timeout", "cancelled"):
                     raise TimeoutError(f"LuckMail ordem {order_no} encerrada com status: {status}")
+                # status == "pending": continua aguardando
             except TimeoutError:
                 raise
-            except Exception:
-                pass
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"[LuckMail] erro no poll #{consecutive_errors}: {e}")
+                # Falha de autenticação: aborta imediatamente em vez de esperar timeout
+                err_msg = str(e)
+                if "1002" in err_msg or "1003" in err_msg or "401" in err_msg:
+                    raise RuntimeError(
+                        f"[LuckMail] autenticação falhou — verifique API Key/Secret: {e}"
+                    ) from e
+                if consecutive_errors >= 5:
+                    raise RuntimeError(
+                        f"[LuckMail] muitas falhas consecutivas ({consecutive_errors}x): {e}"
+                    ) from e
             _time.sleep(3)
         try:
             self._request("POST", f"/api/v1/openapi/order/{order_no}/cancel")
