@@ -419,21 +419,28 @@ class KiroRegister:
 
     def _accept_cookie_banner_if_present(self, page: Page):
         try:
-            if page.locator("text=/cookie/i").count() == 0:
-                return
-
+            # Use ID-based selectors first (locale-agnostic) so Portuguese/Spanish etc. pages work
             selectors = [
-                'button[data-id*="awsccc"]:has-text("Accept")',
+                'button[id*="awsccc"][id*="accept"]',  # e.g. awsccc-u-btn-accept
                 'button[id*="awsccc-accept"]',
+                'button[data-id*="awsccc-accept"]',
+                # Text-based fallbacks (English + Portuguese + Spanish + French)
+                'button:has-text("Accept all")',
                 'button:has-text("Accept")',
+                'button:has-text("Aceitar")',
+                'button:has-text("Aceptar")',
+                'button:has-text("Accepter")',
             ]
             for sel in selectors:
-                btn = page.locator(sel).first
-                if btn.count() > 0 and btn.is_visible():
-                    btn.click(timeout=2000)
-                    self.log("已处理 Cookie 横幅（Accept）")
-                    self._human_sleep(0.2, 0.45)
-                    return
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() > 0 and btn.is_visible():
+                        btn.click(timeout=2000)
+                        self.log("已处理 Cookie 横幅（Accept）")
+                        self._human_sleep(0.2, 0.45)
+                        return
+                except Exception:
+                    continue
         except Exception:
             pass
 
@@ -496,32 +503,45 @@ class KiroRegister:
             pass
 
     def _click_primary_button(self, page: Page):
-        # 给予 React 状态同步时间，防止打字太快点击导致验证失效
+        # Give React time to sync state before clicking
         self._human_sleep(0.45, 1.05)
 
         try:
-            # 依优先级测试页面上可能的提要按钮
-            selectors = [
+            # 1. data-testid selectors (locale-agnostic, highest priority)
+            testid_selectors = [
                 'button[data-testid*="verify-button"]',
                 'button[data-testid*="next-button"]',
                 'button[data-testid="test-primary-button"]',
-                'button[type="submit"]:has-text("Continue")',
-                'button[type="submit"]:has-text("Verify")',
-                'button[type="submit"]:has-text("Create")',
-                'button[type="submit"]:has-text("Next")',
             ]
-            for sel in selectors:
+            for sel in testid_selectors:
                 btn = page.locator(sel).first
                 if btn.count() > 0 and btn.is_visible():
                     btn.click(timeout=2000)
                     self._human_sleep(0.22, 0.65)
                     return
 
-            # 最后的退路：查找未带有 awsccc（Cookie Consent）的可见 Submit 按钮
+            # 2. Text-based submit buttons (English + Portuguese + Spanish + French)
+            text_variants = [
+                "Continue", "Continuar", "Continuer", "Weiter",
+                "Verify",  "Verificar",  "Vérifier",
+                "Create",  "Criar",      "Créer",
+                "Next",    "Próximo",    "Suivant",
+                "Submit",  "Enviar",     "Soumettre",
+                "Sign up", "Registrar",  "S'inscrire",
+            ]
+            for text in text_variants:
+                btn = page.locator(f'button[type="submit"]:has-text("{text}")').first
+                if btn.count() > 0 and btn.is_visible():
+                    btn.click(timeout=2000)
+                    self._human_sleep(0.22, 0.65)
+                    return
+
+            # 3. Generic fallback: any visible submit button that isn't part of cookie consent
             fallback = page.locator(
-                'button[type="submit"]:not([data-id*="awsccc"]):visible'
+                'button[type="submit"]:not([id*="awsccc"]):not([data-id*="awsccc"])'
             ).first
             if fallback.count() > 0 and fallback.is_visible():
+                self.log(f"  使用通用 submit 按钮: {(fallback.text_content() or '').strip()[:40]}")
                 fallback.click(timeout=2000)
                 self._human_sleep(0.22, 0.65)
         except Exception:
